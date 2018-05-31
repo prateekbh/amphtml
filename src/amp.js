@@ -69,6 +69,11 @@ startupChunk(self.document, function initial() {
   if (self.document.documentElement.hasAttribute('i-amphtml-no-boilerplate')) {
     perf.addEnabledExperiment('no-boilerplate');
   }
+  if (self.document.querySelector('script[type=module]')) {
+    perf.addEnabledExperiment('module-nomodule-experiment');
+  } else if (self.document.querySelector('script[data-nomodule]')) {
+    perf.addEnabledExperiment('module-nomodule-experiment-alt');
+  }
   installPlatformService(self);
   fontStylesheetTimeout(self);
   perf.tick('is');
