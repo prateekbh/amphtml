@@ -184,12 +184,6 @@ export function fromStructuredCloneable(response, responseType) {
     }
   }
 
-  if (isDocumentType) {
-    // TODO(prateekbh): remove this when integrating document fetcher.
-    data.responseXML =
-        new DOMParser().parseFromString(data.responseText, 'text/html');
-  }
-
   return new FetchResponse(data);
 }
 
@@ -568,20 +562,6 @@ export class FetchResponse {
   json() {
     return /** @type {!Promise<!JsonObject>} */ (
       this.drainText_().then(parseJson));
-  }
-
-  /**
-   * Reads the xhr responseXML.
-   * @return {!Promise<!Document>}
-   */
-  document() {
-    dev().assert(!this.bodyUsed, 'Body already used');
-    this.bodyUsed = true;
-    user().assert(this.xhr_.responseXML,
-        'responseXML should exist. Make sure to return ' +
-        'Content-Type: text/html header.');
-    const doc = /** @type {!Document} */(dev().assert(this.xhr_.responseXML));
-    return Promise.resolve(doc);
   }
 
   /**

@@ -128,11 +128,13 @@ export class Poller {
     const work = () => {
       this.lastWorkPromise_ = this.work_()
           .then(() => {
+            console.log('done');
             if (this.backoffClock_) {
               this.backoffClock_ = null;
             }
             this.poll_();
           }).catch(err => {
+            console.log('broken');
             if (err.retriable) {
               if (!this.backoffClock_) {
                 this.backoffClock_ = exponentialBackoffClock();
