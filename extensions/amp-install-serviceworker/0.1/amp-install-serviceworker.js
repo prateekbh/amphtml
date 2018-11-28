@@ -59,7 +59,7 @@ export class AmpInstallServiceWorker extends AMP.BaseElement {
     if (urlService.isProxyOrigin(src) ||
         urlService.isProxyOrigin(win.location.href)) {
       const iframeSrc = this.element.getAttribute('data-iframe-src');
-      if (iframeSrc) {
+      if (iframeSrc && !this.isIPhoneUA_()) {
         urlService.assertHttpsUrl(iframeSrc, this.element);
         const {origin} = urlService.parse(iframeSrc);
         const docInfo = Services.documentInfoForDoc(this.element);
@@ -114,6 +114,19 @@ export class AmpInstallServiceWorker extends AMP.BaseElement {
       this.element.appendChild(iframe);
     });
   }
+  
+  /**
+  * Checks if the user agent is iPhone because safari
+  * adds another check for top level UA and prohibits 
+  * cache sharing between iframe on another domain pages
+  * and the actual domain.
+  * See: todo add link here
+  * @private
+  */
+  isIPhoneUA_() {
+    return navigator.userAgent.indexOf('iPhone') != -1;
+  }
+
 
   /** @private */
   maybeInstallUrlRewrite_() {
