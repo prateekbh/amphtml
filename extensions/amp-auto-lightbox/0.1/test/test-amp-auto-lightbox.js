@@ -18,18 +18,18 @@ import {AutoLightboxEvents} from '../../../../src/auto-lightbox';
 import {CommonSignals} from '../../../../src/common-signals';
 import {
   Criteria,
-  ENABLED_SCHEMA_TYPES,
+  DocMetaAnnotations,
+  ENABLED_LD_JSON_TYPES,
+  ENABLED_OG_TYPE_ARTICLE,
   LIGHTBOXABLE_ATTR,
   Mutation,
   RENDER_AREA_RATIO,
   REQUIRED_EXTENSION,
   Scanner,
-  Schema,
   VIEWPORT_AREA_RATIO,
   apply,
-  meetsCriteria,
+  isEnabledForDoc,
   meetsSizingCriteria,
-  resolveIsEnabledForDoc,
   runCandidates,
   scan,
 } from '../amp-auto-lightbox';
@@ -37,11 +37,11 @@ import {Services} from '../../../../src/services';
 import {Signals} from '../../../../src/utils/signals';
 import {createElementWithAttributes} from '../../../../src/dom';
 import {htmlFor} from '../../../../src/static-template';
-import {parseUrlDeprecated} from '../../../../src/url';
+import {isArray} from '../../../../src/types';
 import {tryResolve} from '../../../../src/utils/promise';
 
 
-const TAG = 'amp-lightbox-gallery-detection';
+const TAG = 'amp-auto-lightbox';
 
 
 describes.realWin(TAG, {
@@ -55,44 +55,46 @@ describes.realWin(TAG, {
 
   const {any} = sinon.match;
 
-  const capitalize = str => str.replace(/^([a-z])/, (_, m) => m.toUpperCase());
+  const ldJsonSchemaTypes = Object.keys(ENABLED_LD_JSON_TYPES);
+  const ogTypes = [ENABLED_OG_TYPE_ARTICLE];
 
-  const schemaTypes = Object.keys(ENABLED_SCHEMA_TYPES);
+  const firstElementLeaf = el =>
+    el.firstElementChild ? firstElementLeaf(el.firstElementChild) : el;
 
-  const ampImgFromTree = el =>
-    el.tagName == 'AMP-IMG' ? el : el.querySelector('amp-img');
-
-  const criteriaMethod = c => 'meets' + capitalize(c) + 'Criteria';
-
-  function mockCriteriaMet(criteria, isMet) {
-    env.sandbox.stub(Criteria, criteriaMethod(criteria)).returns(isMet);
+  function wrap(el, wrapper) {
+    firstElementLeaf(wrapper).appendChild(el);
+    return wrapper;
   }
 
-  const stubAllCriteriaMet = () =>
-    env.sandbox.stub(Criteria, 'meetsAll');
-
-  function mockAllCriteriaMet(isMet) {
-    stubAllCriteriaMet().returns(isMet);
-  }
+  const stubAllCriteriaMet = () => env.sandbox.stub(Criteria, 'meetsAll');
+  const mockAllCriteriaMet = isMet =>
+    stubAllCriteriaMet().returns(tryResolve(() => isMet));
 
   function mockCandidates(candidates) {
     env.sandbox.stub(Scanner, 'getCandidates').returns(candidates);
+    return candidates;
   }
 
-  function mockSchemaType(type) {
-    env.sandbox.stub(Schema, 'getDocumentType').returns(type);
-  }
+  const mockLdJsonSchemaTypes = type =>
+    env.sandbox.stub(DocMetaAnnotations, 'getAllLdJsonTypes')
+        .returns(isArray(type) ? type : [type]);
 
-  function mockIsEmbeddedAndTrustedViewer(isEmbedded, opt_isTrusted) {
-    const isTrusted = opt_isTrusted === undefined ? isEmbedded : opt_isTrusted;
-    const viewerHostname = isTrusted ? 'google.com' : 'tacos.al.pastor';
+  const mockOgType = type =>
+    env.sandbox.stub(DocMetaAnnotations, 'getOgType').returns(type);
 
-    env.sandbox.stub(Services, 'viewerForDoc').returns({
-      isEmbedded() {
-        return isEmbedded;
-      },
-      getViewerOrigin() {
-        return tryResolve(() => `https://${viewerHostname}`);
+  const iterProduct = (a, b, callback) => a.forEach(itemA =>
+    b.forEach(itemB => callback(itemA, itemB)));
+
+  const squaredCompare = (set, callback) => iterProduct(set, set, (a, b) => {
+    if (a != b) {
+      callback(a, b);
+    }
+  });
+
+  function mockIsProxyOrigin(isProxyOrigin) {
+    env.sandbox.stub(Services, 'urlForDoc').returns({
+      isProxyOrigin() {
+        return isProxyOrigin;
       },
     });
   }
@@ -108,13 +110,8 @@ describes.realWin(TAG, {
   }
 
   // necessary since element matching `withArgs` deep equals and overflows
-  function matchEquals(comparison) {
-    return sinon.match(subject => subject == comparison);
-  }
-
-  function mockCandidatesForLengthCheck() {
-    return ['foo'];
-  }
+  const matchEquals = comparison =>
+    sinon.match(subject => subject == comparison);
 
   function mockLoadedSignal(element, isLoadedSuccessfully) {
     const signals = new Signals();
@@ -132,280 +129,130 @@ describes.realWin(TAG, {
 
     env.sandbox.stub(Mutation, 'mutate').callsFake((_, mutator) =>
       tryResolve(mutator));
-
-    env.sandbox.stub(Services, 'urlForDoc').returns({
-      parse(url) {
-        return parseUrlDeprecated(url);
-      },
-    });
   });
 
-  describe('meetsCriteria', () => {
+  describe('meetsTreeShapeCriteria', () => {
 
-    it('rejects placeholder elements', () => {
-      mockCriteriaMet('actionable', true);
-      mockCriteriaMet('sizing', true);
+    const meetsTreeShapeCriteriaMsg = ({outerHtml}) =>
+      `Criteria.meetsTreeShapeCriteria(html\`${outerHtml}\`)`;
 
-      const renderScenarios = [
-        // image is placeholder
-        html`<amp-img src="bla.png" placeholder></amp-img>`,
+    function itAcceptsOrRejects(scenarios) {
+      scenarios.forEach(({rejects, accepts, mutate, wrapWith}) => {
+        const maybeWrap = root => wrapWith ? wrap(root, wrapWith()) : root;
+        const maybeMutate = root => mutate && mutate(root);
 
-        // immediate ancestor is placeholder
-        html`<div placeholder>
-          <amp-img src="bla.png"></amp-img>
-        </div>`,
+        it(`${accepts ? 'accepts' : 'rejects'} ${accepts || rejects}`, () => {
+          [
+            html`<amp-img src="asada.png"></amp-img>`,
+            html`<div><amp-img src="adobada.png"></amp-img></div>`,
+            html`<div><div><amp-img src="carnitas.png"></amp-img></div></div>`,
+          ].forEach(unwrapped => {
+            maybeMutate(unwrapped);
 
-        // non-immediate ancestor is placeholder
-        html`<div placeholder>
-          <div>
-            <amp-img src="bla.png"></amp-img>
-          </div>
-        </div>`,
-      ];
+            const scenario = maybeWrap(unwrapped);
+            const candidate = firstElementLeaf(scenario);
 
-      renderScenarios.forEach(root => {
-        expect(meetsCriteria(ampImgFromTree(root))).to.be.false;
+            env.win.document.body.appendChild(scenario);
+
+            expect(candidate).to.be.ok;
+            expect(candidate.tagName).to.equal('AMP-IMG');
+
+            expect(Criteria.meetsTreeShapeCriteria(candidate),
+                meetsTreeShapeCriteriaMsg(scenario)).to.equal(!!accepts);
+          });
+        });
       });
+    }
+
+    describe('self-test', () => {
+      const criteriaIsMetThereforeAcceptsOrRejects = (isMet, scenarios) => {
+        describe(`Criteria ${isMet ? 'met' : 'unmet'}`, () => {
+          beforeEach(() => {
+            env.sandbox.stub(Criteria, 'meetsTreeShapeCriteria').returns(isMet);
+          });
+          itAcceptsOrRejects(scenarios);
+        });
+      };
+      criteriaIsMetThereforeAcceptsOrRejects(true, [{accepts: 'any'}]);
+      criteriaIsMetThereforeAcceptsOrRejects(false, [{rejects: 'any'}]);
     });
 
-    it('rejects elements actionable by tap', () => {
-      mockCriteriaMet('placeholder', true);
-      mockCriteriaMet('sizing', true);
-
-      const renderScenarios = [
-        // immediate container is tappable
-        html`<div on="tap:doSomething">
-          <amp-img src="bla.png"></amp-img>
-        </div>`,
-
-        // non-immediate ancestor is tappable
-        html`<div on="tap:doSomething">
-          <div>
-            <amp-img src="bla.png"></amp-img>
-          </div>
-        </div>`,
-
-        // image is tappable
-        html`<amp-img src="bla.png" on="tap:doSomething">`,
-
-        // immediate container is tappable with prefix actions
-        html`<div on="whatever:doSomething;tap:doSomething">
-          <amp-img src="bla.png"></amp-img>
-        </div>`,
-
-        // non-immediate ancestor is tappable with prefix actions
-        html`<div on="whatever:doSomething;tap:doSomething">
-          <div>
-            <amp-img src="bla.png"></amp-img>
-          </div>
-        </div>`,
-
-        // image is tappable with prefix actions
-        html`<amp-img src="bla.png" on="whatever:doSomething;tap:doSomething">`,
-
-        // immediate container is tappable with sufix actions
-        html`<div on="tap:doSomething;whatever:doSomething">
-          <amp-img src="bla.png"></amp-img>
-        </div>`,
-
-        // non-immediate ancestor is tappable with sufix actions
-        html`<div on="tap:doSomething;whatever:doSomething">
-          <div>
-            <amp-img src="bla.png"></amp-img>
-          </div>
-        </div>`,
-
-        // image is tappable with sufix actions
-        html`<amp-img src="bla.png" on="tap:doSomething;whatever:doSomething">`,
-
-        // immediate container is tappable with whitespace
-        html`<div on=" tap:doSomething;  ">
-          <amp-img src="bla.png"></amp-img>
-        </div>`,
-
-        // non-immediate ancestor is tappable with whitespace
-        html`<div on=" tap:doSomething;  ">
-          <div>
-            <amp-img src="bla.png"></amp-img>
-          </div>
-        </div>`,
-
-        // image is tappable with whitespace
-        html`<amp-img src="bla.png" on=" tap:doSomething; ">`,
-      ];
-
-      renderScenarios.forEach(root => {
-        env.win.document.body.appendChild(root);
-        expect(meetsCriteria(ampImgFromTree(root))).to.be.false;
-      });
+    beforeEach(() => {
+      // Insert element for valid tap actions to be resolved.
+      env.win.document.body.appendChild(html`<div id="valid"></div>`);
     });
 
-    it('accepts elements with a non-tap action', () => {
-      mockCriteriaMet('placeholder', true);
-      mockCriteriaMet('sizing', true);
-
-      const renderScenarios = [
-        // immediate container has non-tap actions
-        html`<div on="nottap:doSomething">
-          <amp-img src="bla.png"></amp-img>
-        </div>`,
-
-        // non-immediate ancestor has non-tap actions
-        html`<div on="nottap:doSomething">
-          <div>
-            <amp-img src="bla.png"></amp-img>
-          </div>
-        </div>`,
-
-        // image has non-tap actions
-        html`<amp-img src="bla.png" on="nottap:doSomething">`,
-      ];
-
-      renderScenarios.forEach(root => {
-        env.win.document.body.appendChild(root);
-        expect(meetsCriteria(ampImgFromTree(root))).to.be.true;
-      });
-    });
-
-    it('rejects elements inside an <amp-selector>', () => {
-      mockCriteriaMet('placeholder', true);
-      mockCriteriaMet('sizing', true);
-
-      const renderScenarios = [
-        // immediate container is amp-selector > [option]
-        html`<amp-selector>
-          <div option>
-            <amp-img src="bla.png"></amp-img>
-          </div>
-        </amp-selector>`,
-
-        // non-immediate ancestor is amp-selector > [option]
-        html`<amp-selector>
-          <div option>
-            <div>
-              <amp-img src="bla.png"></amp-img>
-            </div>
-          </div>
-        </amp-selector>`,
-
-        // non-immediate ancestor is amp-selector [option]
-        html`<amp-selector>
-          <div>
-            <div option>
-              <div>
-                <amp-img src="bla.png"></amp-img>
-              </div>
-            </div>
-          </div>
-        </amp-selector>`,
-      ];
-
-      renderScenarios.forEach(root => {
-        expect(meetsCriteria(ampImgFromTree(root))).to.be.false;
-      });
-    });
-
-    it('rejects elements inside a <button>', () => {
-      mockCriteriaMet('placeholder', true);
-      mockCriteriaMet('sizing', true);
-
-      const renderScenarios = [
-        // immediate container is button
-        html`<button>
-          <amp-img src="bla.png"></amp-img>
-        </button>`,
-
-        // non-immediate ancestor is button
-        html`<button>
-          <div>
-            <amp-img src="bla.png"></amp-img>
-          </div>
-        </button>`,
-      ];
-
-      renderScenarios.forEach(root => {
-        expect(meetsCriteria(ampImgFromTree(root))).to.be.false;
-      });
-    });
-
-    it('rejects elements inside an <amp-script>', () => {
-      mockCriteriaMet('placeholder', true);
-      mockCriteriaMet('sizing', true);
-
-      const renderScenarios = [
-        // immediate container is amp-script
-        html`<amp-script>
-          <amp-img src="bla.png"></amp-img>
-        </amp-script>`,
-
-        // non-immediate ancestor is amp-script
-        html`<amp-script>
-          <div>
-            <amp-img src="bla.png"></amp-img>
-          </div>
-        </amp-script>`,
-      ];
-
-      renderScenarios.forEach(root => {
-        expect(meetsCriteria(ampImgFromTree(root))).to.be.false;
-      });
-    });
-
-    it('rejects elements inside an <amp-story>', () => {
-      mockCriteriaMet('placeholder', true);
-      mockCriteriaMet('sizing', true);
-
-      const renderScenarios = [
-        // immediate container is amp-story
-        html`<amp-story>
-          <amp-img src="bla.png"></amp-img>
-        </amp-story>`,
-
-        // non-immediate ancestor is amp-story
-        html`<amp-story>
-          <div>
-            <amp-img src="bla.png"></amp-img>
-          </div>
-        </amp-story>`,
-      ];
-
-      renderScenarios.forEach(root => {
-        expect(meetsCriteria(ampImgFromTree(root))).to.be.false;
-      });
-    });
-
-    it('rejects elements inside a clickable link', () => {
-      mockCriteriaMet('placeholder', true);
-      mockCriteriaMet('sizing', true);
-
-      const renderScenarios = [
-        // immediate container is clickable link
-        html`<a href="http://hamberders.com">
-          <amp-img src="bla.png"></amp-img>
-        </a>`,
-
-        // non-immediate ancestor is clickable link
-        html`<a href="http://hamberders.com">
-          <div>
-            <amp-img src="bla.png"></amp-img>
-          </div>
-        </a>`,
-      ];
-
-      renderScenarios.forEach(root => {
-        expect(meetsCriteria(ampImgFromTree(root))).to.be.false;
-      });
-    });
+    itAcceptsOrRejects([
+      {
+        accepts: 'elements by default',
+      },
+      {
+        accepts: 'elements with a non-tap action',
+        mutate: el => el.setAttribute('on', 'nottap:valid'),
+      },
+      {
+        accepts: 'elements with a tap action that does not resolve to a node',
+        mutate: el => el.setAttribute('on', 'tap:i-do-not-exist'),
+      },
+      {
+        accepts: 'elements inside non-clickable anchor',
+        wrapWith: () => html`<a id=my-anchor></a>`,
+      },
+      {
+        rejects: 'explicitly opted-out subnodes',
+        mutate: el => el.setAttribute('data-amp-auto-lightbox-disable', ''),
+      },
+      {
+        rejects: 'placeholder subnodes',
+        mutate: el => el.setAttribute('placeholder', ''),
+      },
+      {
+        rejects: 'items actionable by tap with a single action',
+        mutate: el => el.setAttribute('on', 'tap:valid'),
+      },
+      {
+        rejects: 'items actionable by tap with multiple actions',
+        mutate: el => el.setAttribute('on', 'whatever:something;tap:valid'),
+      },
+      {
+        rejects: 'items inside an amp-selector',
+        mutate: el => el.setAttribute('option', ''),
+        wrapWith: () => html`<amp-selector></amp-selector>`,
+      },
+      {
+        rejects: 'items inside a button',
+        wrapWith: () => html`<button></button>`,
+      },
+      {
+        rejects: 'items inside amp-script',
+        wrapWith: () => html`<amp-script></amp-script>`,
+      },
+      {
+        rejects: 'items inside amp-story',
+        wrapWith: () => html`<amp-story></amp-story>`,
+      },
+      {
+        rejects: 'items inside amp-lightbox',
+        wrapWith: () => html`<amp-lightbox></amp-lightbox>`,
+      },
+      {
+        rejects: 'items inside a clickable link',
+        wrapWith: () => html`<a href="http://hamberders.com"></a>`,
+      },
+    ]);
 
   });
 
   describe('meetsSizingCriteria', () => {
     const areaDeltaPerc = RENDER_AREA_RATIO * 100;
+    const {vw, vh} = {vw: 1000, vh: 600};
+
+    const expectMeetsSizingCriteria = (
+      renderWidth, renderHeight, naturalWidth, naturalHeight) =>
+      expect(meetsSizingCriteria(
+          renderWidth, renderHeight, naturalWidth, naturalHeight, vw, vh));
 
     it(`accepts elements ${areaDeltaPerc}%+ of size than render area`, () => {
-      const vw = 1000;
-      const vh = 600;
-
       const renderWidth = 1000;
       const renderHeight = 200;
 
@@ -414,31 +261,17 @@ describes.realWin(TAG, {
       const minArea = (renderArea) * RENDER_AREA_RATIO;
       const minDim = Math.sqrt(minArea);
 
-      [
-        minDim + 1,
-        minDim + 10,
-        minDim + 100,
-      ].forEach(naturalWidth => {
-        [
-          minDim + 1,
-          minDim + 10,
-          minDim + 100,
-        ].forEach(naturalHeight => {
-          expect(meetsSizingCriteria(
-              renderWidth,
-              renderHeight,
-              naturalWidth,
-              naturalHeight,
-              vw,
-              vh)).to.be.true;
-        });
+      const axisRange = [minDim + 1, minDim + 10, minDim + 100];
+      iterProduct(axisRange, axisRange, (naturalWidth, naturalHeight) => {
+        expectMeetsSizingCriteria(
+            renderWidth,
+            renderHeight,
+            naturalWidth,
+            naturalHeight).to.be.true;
       });
     });
 
     it(`rejects elements < ${areaDeltaPerc}%+ of size of render area`, () => {
-      const vw = 1000;
-      const vh = 600;
-
       const renderWidth = 100;
       const renderHeight = 100;
 
@@ -447,93 +280,51 @@ describes.realWin(TAG, {
       const minArea = (renderArea) * (RENDER_AREA_RATIO - 0.1);
       const minDim = Math.sqrt(minArea);
 
-      [
-        minDim,
-        minDim - 10,
-        minDim - 100,
-      ].forEach(naturalWidth => {
-        [
-          minDim,
-          minDim - 10,
-          minDim - 100,
-        ].forEach(naturalHeight => {
-          expect(meetsSizingCriteria(
-              renderWidth,
-              renderHeight,
-              naturalWidth,
-              naturalHeight,
-              vw,
-              vh)).to.be.false;
-        });
+      const axisRange = [minDim, minDim - 10, minDim - 100];
+      iterProduct(axisRange, axisRange, (naturalWidth, naturalHeight) => {
+        expectMeetsSizingCriteria(
+            renderWidth,
+            renderHeight,
+            naturalWidth,
+            naturalHeight).to.be.false;
       });
     });
 
     const minAreaPerc = VIEWPORT_AREA_RATIO * 100;
 
     it(`accepts elements that cover ${minAreaPerc}%+ of the viewport`, () => {
-      const vw = 1000;
-      const vh = 600;
-
       const minArea = (vw * vh) * VIEWPORT_AREA_RATIO;
       const minDim = Math.sqrt(minArea);
 
       const naturalWidth = 100;
       const naturalHeight = 100;
 
-      [
-        minDim,
-        minDim + 10,
-        minDim + 100,
-      ].forEach(renderWidth => {
-        [
-          minDim,
-          minDim + 10,
-          minDim + 100,
-        ].forEach(renderHeight => {
-          expect(meetsSizingCriteria(
-              renderWidth,
-              renderHeight,
-              naturalWidth,
-              naturalHeight,
-              vw,
-              vh)).to.be.true;
-        });
+      const axisRange = [minDim, minDim + 10, minDim + 100];
+      iterProduct(axisRange, axisRange, (renderWidth, renderHeight) => {
+        expectMeetsSizingCriteria(
+            renderWidth,
+            renderHeight,
+            naturalWidth,
+            naturalHeight).to.be.true;
       });
 
     });
 
     it(`rejects elements that cover < ${minAreaPerc}% of the viewport`, () => {
-      const vw = 1000;
-      const vh = 600;
-
       const minArea = (vw * vh) * VIEWPORT_AREA_RATIO;
       const minDim = Math.sqrt(minArea);
 
-      [
-        minDim - 1,
-        minDim - 10,
-        minDim - 100,
-      ].forEach(renderWidth => {
-        [
-          minDim - 1,
-          minDim - 10,
-          minDim - 100,
-        ].forEach(renderHeight => {
-          expect(meetsSizingCriteria(
-              renderWidth,
-              renderHeight,
-              /* naturalWidth */ renderWidth,
-              /* naturalHeight */ renderHeight,
-              vw,
-              vh)).to.be.false;
-        });
+      const axisRange = [minDim - 1, minDim - 10, minDim - 100];
+      iterProduct(axisRange, axisRange, (renderWidth, renderHeight) => {
+        expectMeetsSizingCriteria(
+            renderWidth,
+            renderHeight,
+            /* naturalWidth */ renderWidth,
+            /* naturalHeight */ renderHeight).to.be.false;
       });
     });
 
     it('accepts elements with height > than viewport\'s', () => {
-      const vw = 1000;
-      const vh = 600;
-
       const renderWidth = vw;
       const renderHeight = vh;
 
@@ -542,20 +333,15 @@ describes.realWin(TAG, {
         vh + 10,
         vh + 100,
       ].forEach(naturalHeight => {
-        expect(meetsSizingCriteria(
+        expectMeetsSizingCriteria(
             renderWidth,
             renderHeight,
             /* naturalWidth */ renderWidth,
-            naturalHeight,
-            vw,
-            vh)).to.be.true;
+            naturalHeight).to.be.true;
       });
     });
 
     it('accepts elements with width > than viewport\'s', () => {
-      const vw = 1000;
-      const vh = 600;
-
       const renderWidth = vw;
       const renderHeight = vh;
 
@@ -564,41 +350,25 @@ describes.realWin(TAG, {
         vw + 10,
         vw + 100,
       ].forEach(naturalWidth => {
-        expect(meetsSizingCriteria(
+        expectMeetsSizingCriteria(
             renderWidth,
             renderHeight,
             naturalWidth,
-            /* naturalHeight */ renderHeight,
-            vw,
-            vh)).to.be.true;
+            /* naturalHeight */ renderHeight).to.be.true;
       });
     });
 
     it('rejects elements with dimensions <= than viewport\'s', () => {
-      const vw = 1000;
-      const vh = 600;
-
       const renderWidth = 100;
       const renderHeight = 100;
 
-      [
-        renderWidth,
-        renderWidth - 10,
-        renderWidth - 100,
-      ].forEach(naturalWidth => {
-        [
-          renderHeight,
-          renderHeight - 10,
-          renderHeight - 100,
-        ].forEach(naturalHeight => {
-          expect(meetsSizingCriteria(
-              renderWidth,
-              renderHeight,
-              naturalWidth,
-              naturalHeight,
-              vw,
-              vh)).to.be.false;
-        });
+      const axisRange = [renderWidth, renderWidth - 10, renderWidth - 100];
+      iterProduct(axisRange, axisRange, (naturalWidth, naturalHeight) => {
+        expectMeetsSizingCriteria(
+            renderWidth,
+            renderHeight,
+            naturalWidth,
+            naturalHeight).to.be.false;
       });
     });
 
@@ -606,113 +376,99 @@ describes.realWin(TAG, {
 
   describe('scan', () => {
 
-    function waitForAllScannedToBeResolved() {
-      return scan(env.ampdoc).then(scanned => scanned && Promise.all(scanned));
-    }
+    const waitForAllScannedToBeResolved = () => {
+      const scanned = scan(env.ampdoc);
+      if (scanned) {
+        return Promise.all(scanned);
+      }
+    };
 
-    it('does not load extension if no candidates found', function* () {
+    beforeEach(() => {
+      // mock valid type
+      mockLdJsonSchemaTypes(ldJsonSchemaTypes[0]);
+    });
+
+    it('does not load extension if no candidates found', async() => {
       const installExtensionForDoc = spyInstallExtensionsForDoc();
 
-      mockSchemaType(schemaTypes[0]);
-      mockIsEmbeddedAndTrustedViewer(true);
+      mockIsProxyOrigin(true);
       mockCandidates([]);
 
-      yield waitForAllScannedToBeResolved();
+      await waitForAllScannedToBeResolved();
 
       expect(installExtensionForDoc.withArgs(any, REQUIRED_EXTENSION))
           .to.not.have.been.called;
     });
 
-    it('loads extension if >= 1 candidates meet criteria', function* () {
+    it('loads extension if >= 1 candidates meet criteria', async() => {
       const installExtensionForDoc = spyInstallExtensionsForDoc();
 
-      mockSchemaType(schemaTypes[0]);
-      mockIsEmbeddedAndTrustedViewer(true);
-      mockCandidates([
-        mockLoadedSignal(html`<amp-img src="bla.png"></amp-img>`, true),
-      ]);
+      mockIsProxyOrigin(true);
+      mockCandidates([mockLoadedSignal(html`<amp-img></amp-img>`, true)]);
 
       mockAllCriteriaMet(true);
 
-      yield waitForAllScannedToBeResolved();
+      await waitForAllScannedToBeResolved();
 
       expect(installExtensionForDoc.withArgs(any, REQUIRED_EXTENSION))
           .to.have.been.calledOnce;
     });
 
-    it('does not load extension if no candidates meet criteria', function* () {
+    it('does not load extension if no candidates meet criteria', async() => {
       const installExtensionForDoc = spyInstallExtensionsForDoc();
 
-      mockCandidates([
-        mockLoadedSignal(html`<amp-img src="bla.png"></amp-img>`, true),
-      ]);
+      mockCandidates([mockLoadedSignal(html`<amp-img></amp-img>`, true)]);
 
       mockAllCriteriaMet(false);
-      mockIsEmbeddedAndTrustedViewer(true);
+      mockIsProxyOrigin(true);
 
-      yield waitForAllScannedToBeResolved();
+      await waitForAllScannedToBeResolved();
 
       expect(installExtensionForDoc.withArgs(any, REQUIRED_EXTENSION))
           .to.not.have.been.called;
     });
 
-    it('sets attribute only for candidates that meet criteria', function* () {
+    it('sets attribute only for candidates that meet criteria', async() => {
       const a = mockLoadedSignal(html`<amp-img src="a.png"></amp-img>`, true);
       const b = mockLoadedSignal(html`<amp-img src="b.png"></amp-img>`, true);
       const c = mockLoadedSignal(html`<amp-img src="c.png"></amp-img>`, true);
 
       const allCriteriaMet = stubAllCriteriaMet();
 
-      allCriteriaMet.withArgs(matchEquals(a)).returns(true);
-      allCriteriaMet.withArgs(matchEquals(b)).returns(false);
-      allCriteriaMet.withArgs(matchEquals(c)).returns(true);
+      allCriteriaMet.withArgs(matchEquals(a)).returns(tryResolve(() => true));
+      allCriteriaMet.withArgs(matchEquals(b)).returns(tryResolve(() => false));
+      allCriteriaMet.withArgs(matchEquals(c)).returns(tryResolve(() => true));
 
-      mockSchemaType(schemaTypes[0]);
       mockCandidates([a, b, c]);
-      mockIsEmbeddedAndTrustedViewer(true);
+      mockIsProxyOrigin(true);
 
-      yield waitForAllScannedToBeResolved();
+      await waitForAllScannedToBeResolved();
 
-      expect(a.getAttribute(LIGHTBOXABLE_ATTR)).to.be.ok;
-      expect(b.getAttribute(LIGHTBOXABLE_ATTR)).to.not.be.ok;
-      expect(c.getAttribute(LIGHTBOXABLE_ATTR)).to.be.ok;
+      expect(a).to.have.attribute(LIGHTBOXABLE_ATTR);
+      expect(b).to.not.have.attribute(LIGHTBOXABLE_ATTR);
+      expect(c).to.have.attribute(LIGHTBOXABLE_ATTR);
     });
 
-    it('sets unique group for candidates that meet criteria', function* () {
-      const a = mockLoadedSignal(html`<amp-img src="a.png"></amp-img>`, true);
-      const b = mockLoadedSignal(html`<amp-img src="b.png"></amp-img>`, true);
-      const c = mockLoadedSignal(html`<amp-img src="c.png"></amp-img>`, true);
+    it('sets unique group for candidates that meet criteria', async() => {
+      const candidates = mockCandidates([1, 2, 3].map(() =>
+        mockLoadedSignal(html`<amp-img src="a.png"></amp-img>`, true)));
 
       mockAllCriteriaMet(true);
+      mockIsProxyOrigin(true);
 
-      mockSchemaType(schemaTypes[0]);
-      mockCandidates([a, b, c]);
-      mockIsEmbeddedAndTrustedViewer(true);
+      await waitForAllScannedToBeResolved();
 
-      yield waitForAllScannedToBeResolved();
-
-      const aAttr = a.getAttribute(LIGHTBOXABLE_ATTR);
-      const bAttr = b.getAttribute(LIGHTBOXABLE_ATTR);
-      const cAttr = c.getAttribute(LIGHTBOXABLE_ATTR);
-
-      expect(aAttr).to.be.ok;
-      expect(aAttr).to.not.equal(bAttr);
-      expect(aAttr).to.not.equal(cAttr);
-
-      expect(bAttr).to.be.ok;
-      expect(bAttr).to.not.equal(aAttr);
-      expect(bAttr).to.not.equal(cAttr);
-
-      expect(cAttr).to.be.ok;
-      expect(cAttr).to.not.equal(aAttr);
-      expect(cAttr).to.not.equal(bAttr);
+      squaredCompare(candidates, (a, b) => {
+        expect(a.getAttribute(LIGHTBOXABLE_ATTR))
+            .not.to.equal(b.getAttribute(LIGHTBOXABLE_ATTR));
+      });
     });
 
   });
 
   describe('runCandidates', () => {
 
-    it('filters out candidates that fail to load', () => {
+    it('filters out candidates that fail to load', async() => {
       const shouldNotLoad = mockLoadedSignal(
           html`<amp-img src="bla.png"></amp-img>`,
           false);
@@ -725,143 +481,219 @@ describes.realWin(TAG, {
 
       mockAllCriteriaMet(true);
 
-      return Promise.all(runCandidates(env.ampdoc, candidates))
-          .then(candidates => {
-            expect(candidates.length).to.equal(2);
-            expect(candidates[0]).to.not.be.ok;
-            expect(candidates[1]).to.equal(shouldLoad);
-          });
+      const elected = await Promise.all(runCandidates(env.ampdoc, candidates));
+
+      expect(elected).to.have.length(2);
+      expect(elected[0]).to.be.undefined;
+      expect(elected[1]).to.equal(shouldLoad);
     });
 
   });
 
-  describe('resolveIsEnabledForDoc', () => {
+  describe('isEnabledForDoc', () => {
 
-    it('rejects documents without schema', () => {
-      mockIsEmbeddedAndTrustedViewer(true);
+    const expectIsEnabled = shouldBeEnabled => {
+      env.sandbox.stub(env.ampdoc, 'getBody').returns({
+        // only needs to be truthy since its ref req is mocked
+        firstElementChild: true,
+      });
+      expect(isEnabledForDoc(env.ampdoc)).to.equal(shouldBeEnabled);
+    };
 
-      return resolveIsEnabledForDoc(env.ampdoc,
-          mockCandidatesForLengthCheck()).then(isEnabled => {
-        expect(isEnabled).to.be.false;
+    it('rejects documents without any type annotation', () => {
+      mockIsProxyOrigin(true);
+      expectIsEnabled(false);
+    });
+
+    describe('DOM selection', () => {
+
+      const mockRootNodeContent = els => {
+        const fakeRoot = html`<div></div>`;
+        els.forEach(el => {
+          fakeRoot.appendChild(el);
+        });
+        env.sandbox.stub(env.ampdoc, 'getRootNode').returns(fakeRoot);
+      };
+
+      describe('getOgType', () => {
+
+        it('returns empty', () => {
+          expect(DocMetaAnnotations.getOgType(env.ampdoc)).to.be.undefined;
+        });
+
+        it('returns tag', () => {
+          mockRootNodeContent([
+            // Expected:
+            html`<meta property="og:type" content="foo">`,
+
+            // Filler:
+            html`<meta property="og:something" content="bar">`,
+            html`<meta property="vims and emacs are both awful" content="baz">`,
+            html`<meta name="description" content="My Website">`,
+          ]);
+
+          expect(DocMetaAnnotations.getOgType(env.ampdoc)).to.equal('foo');
+        });
+
+      });
+
+      describe('getAllLdJsonTypes', () => {
+
+        const createLdJsonTag = content => {
+          const tag = html`<script type="application/ld+json"></script>`;
+          tag.textContent = JSON.stringify(content);
+          return tag;
+        };
+
+        it('returns empty', () => {
+          expect(DocMetaAnnotations.getAllLdJsonTypes(env.ampdoc)).to.be.empty;
+        });
+
+        it('returns all found @types', () => {
+          const expectedA = 'foo';
+          const expectedB = 'bar';
+          const expectedC = 'baz';
+
+          mockRootNodeContent([
+            html`<script></script>`,
+            createLdJsonTag({'@type': expectedA}),
+            createLdJsonTag({'tacos': 'sí por favor'}),
+            createLdJsonTag({'@type': expectedB}),
+            createLdJsonTag({'@type': expectedC}),
+            createLdJsonTag(''),
+          ]);
+
+          expect(DocMetaAnnotations.getAllLdJsonTypes(env.ampdoc))
+              .to.deep.equal([
+                expectedA,
+                expectedB,
+                expectedC,
+              ]);
+        });
+
+      });
+
+    });
+
+    describe('by LD+JSON @type', () => {
+
+      it('rejects doc with invalid LD+JSON @type', () => {
+        mockIsProxyOrigin(true);
+        mockLdJsonSchemaTypes('hamberder');
+        expectIsEnabled(false);
+      });
+
+      ldJsonSchemaTypes.forEach(type => {
+        const typeSubObj = `{..."@type": "${type}"}`;
+
+        it(`accepts docs with ${typeSubObj} schema and proxy origin`, () => {
+          mockLdJsonSchemaTypes(type);
+          mockIsProxyOrigin(true);
+          expectIsEnabled(true);
+        });
+
+        it(`rejects docs with ${typeSubObj} schema, lightbox explicit`, () => {
+          const doc = env.win.document;
+
+          const extensionScript = createElementWithAttributes(doc, 'script', {
+            'custom-element': REQUIRED_EXTENSION,
+          });
+
+          const lightboxable = createElementWithAttributes(doc, 'amp-img', {
+            [LIGHTBOXABLE_ATTR]: '',
+          });
+
+          doc.head.appendChild(extensionScript);
+          doc.body.appendChild(lightboxable);
+
+          mockLdJsonSchemaTypes(type);
+          mockIsProxyOrigin(true);
+          expectIsEnabled(false);
+        });
+
+        it(`rejects docs with ${typeSubObj} schema, non-proxy origin`, () => {
+          mockLdJsonSchemaTypes(type);
+          mockIsProxyOrigin(false);
+          expectIsEnabled(false);
+        });
+
       });
     });
 
-    it('rejects schema with invalid @type', () => {
-      mockIsEmbeddedAndTrustedViewer(true);
-      mockSchemaType('hamberder');
+    describe('by og:type', () => {
 
-      return resolveIsEnabledForDoc(env.ampdoc,
-          mockCandidatesForLengthCheck()).then(isEnabled => {
-        expect(isEnabled).to.be.false;
-      });
-    });
-
-    schemaTypes.forEach(type => {
-
-      it(`accepts schema with @type=${type}`, () => {
-        mockSchemaType(type);
-        mockIsEmbeddedAndTrustedViewer(true);
-
-        return resolveIsEnabledForDoc(env.ampdoc,
-            mockCandidatesForLengthCheck()).then(isEnabled => {
-          expect(isEnabled).to.be.true;
-        });
+      it('rejects doc with invalid <meta property="og:type">', () => {
+        mockIsProxyOrigin(true);
+        mockOgType('cinnamonroll');
+        expectIsEnabled(false);
       });
 
-      it(`rejects schema with @type=${type} but lightbox explicit`, () => {
-        const doc = env.win.document;
+      ogTypes.forEach(type => {
+        const ogTypeMeta = `<meta property="og:type" content="${type}">`;
 
-        const extensionScript = createElementWithAttributes(doc, 'script', {
-          'custom-element': REQUIRED_EXTENSION,
+        it(`accepts docs with ${ogTypeMeta} and proxy origin`, () => {
+          mockOgType(type);
+          mockIsProxyOrigin(true);
+          expectIsEnabled(true);
         });
 
-        const lightboxable = createElementWithAttributes(doc, 'amp-img', {
-          [LIGHTBOXABLE_ATTR]: '',
+        it(`rejects docs with ${ogTypeMeta}, but lightbox explicit`, () => {
+          const doc = env.win.document;
+
+          const extensionScript = createElementWithAttributes(doc, 'script', {
+            'custom-element': REQUIRED_EXTENSION,
+          });
+
+          const lightboxable = createElementWithAttributes(doc, 'amp-img', {
+            [LIGHTBOXABLE_ATTR]: '',
+          });
+
+          doc.head.appendChild(extensionScript);
+          doc.body.appendChild(lightboxable);
+
+          mockOgType(type);
+          mockIsProxyOrigin(true);
+          expectIsEnabled(false);
         });
 
-        doc.head.appendChild(extensionScript);
-        doc.body.appendChild(lightboxable);
-
-        mockSchemaType(type);
-        mockIsEmbeddedAndTrustedViewer(true);
-
-        return resolveIsEnabledForDoc(env.ampdoc,
-            mockCandidatesForLengthCheck()).then(isEnabled => {
-          expect(isEnabled).to.be.false;
+        it(`rejects docs with ${ogTypeMeta} for non-proxy origin`, () => {
+          mockOgType(type);
+          mockIsProxyOrigin(false);
+          expectIsEnabled(false);
         });
 
       });
-
-      it(`rejects schema with @type=${type} for non-embedded docs`, () => {
-        mockSchemaType(type);
-        mockIsEmbeddedAndTrustedViewer(
-            /* isEmbedded */ false,
-            /* isTrusted */ true);
-
-        return resolveIsEnabledForDoc(
-            env.ampdoc, mockCandidatesForLengthCheck()).then(isEnabled => {
-          expect(isEnabled).to.be.false;
-        });
-      });
-
-      it(`rejects schema with @type=${type} for untrusted viewer`, () => {
-        mockSchemaType(type);
-        mockIsEmbeddedAndTrustedViewer(
-            /* isEmbedded */ true,
-            /* isTrusted */ false);
-
-        return resolveIsEnabledForDoc(
-            env.ampdoc, mockCandidatesForLengthCheck()).then(isEnabled => {
-          expect(isEnabled).to.be.false;
-        });
-      });
-
     });
 
   });
 
   describe('apply', () => {
 
-    it('sets attribute', function* () {
+    it('sets attribute', async() => {
       const element = html`<amp-img src="chabuddy.g"></amp-img>`;
 
-      yield apply(env.ampdoc, element);
+      await apply(env.ampdoc, element);
 
-      expect(element.getAttribute(LIGHTBOXABLE_ATTR)).to.be.ok;
+      expect(element).to.have.attribute(LIGHTBOXABLE_ATTR);
     });
 
-    it('sets unique group for each element', function* () {
-      const a = html`<amp-img src="a.png"></amp-img>`;
-      const b = html`<amp-img src="b.png"></amp-img>`;
-      const c = html`<amp-img src="c.png"></amp-img>`;
+    it('sets unique group for each element', async() => {
+      const candidates = [1, 2, 3].map(() => html`<amp-img></amp-img>`);
 
-      yield apply(env.ampdoc, a);
-      yield apply(env.ampdoc, b);
-      yield apply(env.ampdoc, c);
+      await Promise.all(candidates.map(c => apply(env.ampdoc, c)));
 
-      const aAttr = a.getAttribute(LIGHTBOXABLE_ATTR);
-      const bAttr = b.getAttribute(LIGHTBOXABLE_ATTR);
-      const cAttr = c.getAttribute(LIGHTBOXABLE_ATTR);
-
-      expect(aAttr).to.be.ok;
-      expect(aAttr).to.not.equal(bAttr);
-      expect(aAttr).to.not.equal(cAttr);
-
-      expect(bAttr).to.be.ok;
-      expect(bAttr).to.not.equal(aAttr);
-      expect(bAttr).to.not.equal(cAttr);
-
-      expect(cAttr).to.be.ok;
-      expect(cAttr).to.not.equal(aAttr);
-      expect(cAttr).to.not.equal(bAttr);
+      squaredCompare(candidates, (a, b) => {
+        expect(a.getAttribute(LIGHTBOXABLE_ATTR))
+            .not.to.equal(b.getAttribute(LIGHTBOXABLE_ATTR));
+      });
     });
 
-    it('dispatches event', function* () {
+    it('dispatches event', async() => {
       const element = html`<amp-img src="chabuddy.g"></amp-img>`;
 
       element.dispatchCustomEvent = env.sandbox.spy();
 
-      yield apply(env.ampdoc, element);
+      await apply(env.ampdoc, element);
 
       expect(element.dispatchCustomEvent.withArgs(AutoLightboxEvents.NEWLY_SET))
           .to.have.been.calledOnce;

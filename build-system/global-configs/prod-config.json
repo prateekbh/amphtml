@@ -4,7 +4,9 @@
     "amp-next-page",
     "ampdoc-shell",
     "disable-amp-story-desktop",
-    "linker-meta-opt-in"
+    "linker-meta-opt-in",
+    "inabox-viewport-friendly",
+    "amp-img-auto-sizes"
   ],
   "allow-url-opt-in": [
     "pump-early-frame",
@@ -24,7 +26,7 @@
   "chunked-amp": 1,
   "amp-auto-ads": 1,
   "amp-auto-ads-adsense-holdout": 0.1,
-  "amp-auto-ads-adsense-responsive": 0.05,
+  "amp-auto-ads-adsense-responsive": 0.1,
   "version-locking": 1,
   "as-use-attr-for-format": 0.01,
   "a4aFastFetchDoubleclickLaunched": 0,
@@ -47,10 +49,15 @@
   "doubleclickSraReportExcludedBlock": 0.1,
   "ampdoc-closest": 0.01,
   "linker-form": 1,
-  "scroll-height-bounce": 0,
-  "scroll-height-minheight": 0,
   "hidden-mutation-observer": 1,
   "sandbox-ads": 1,
-  "amp-list-viewport-resize": 0.75,
-  "amp-list-resizable-children": 1
+  "fixed-elements-in-lightbox": 1,
+  "amp-list-viewport-resize": 1,
+  "amp-list-resizable-children": 1,
+  "amp-auto-lightbox": 1,
+  "amp-list-load-more": 1,
+  "amp-ad-ff-adx-ady": 0.01,
+  "amp-img-auto-sizes": 1,
+  "blurry-placeholder": 1,
+  "flexAdSlots": 0.01
 }

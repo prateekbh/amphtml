@@ -22,6 +22,12 @@ export const GTAG_CONFIG = /** @type {!JsonObject} */ ({
         'dr': 'DOCUMENT_REFERRER',
         'dl': 'SOURCE_URL',
       },
+      'conversion': {
+        'gclsrc': 'QUERY_PARAM(gclsrc)',
+        'hasGcl': '$IF(QUERY_PARAM(gclid), 1, 0)',
+        'hasDcl': '$IF(QUERY_PARAM(dclid), 1, 0)',
+        'enabled': true,
+      },
     },
   },
   'vars': {
@@ -110,6 +116,7 @@ export const GTAG_CONFIG = /** @type {!JsonObject} */ ({
     'awConversion': '${awConversionPrefix}${awCommonParams}',
     'awRemarketing': '${awRemarketingPrefix}${awCommonParams}',
     'flBase': 'https://ad.doubleclick.net/activity;src=${flSrc};type=${flType};cat=${flCat}',
+    'flDynamicBase': 'https://${flSrc}.fls.doubleclick.net/activityi;src=${flSrc};type=${flType};cat=${flCat}',
     'dnsBase': 'https://ad.doubleclick.net/ddm/clk/',
   },
   'transport': {
